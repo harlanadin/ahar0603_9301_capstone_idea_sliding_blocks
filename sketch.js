@@ -6,7 +6,6 @@ let boardCols = 12;
 let boardRows = 8;
 let dragSelection = null;
 
-const BOARD_MARGIN = 0;
 const CELL_GAP = 5;
 const MOVE_DURATION_MS = 220;
 const TARGET_CELL_SIZE = 80;
@@ -58,11 +57,12 @@ function resetPuzzle() {
   initializeBoardDimensions();
   pieces = generatePieces();
   activeMove = null;
+  dragSelection = null;
 }
 
 function initializeBoardDimensions() {
-  boardCols = max(12, floor((width - BOARD_MARGIN * 2 + CELL_GAP) / (TARGET_CELL_SIZE + CELL_GAP)));
-  boardRows = max(8, floor((height - BOARD_MARGIN * 2 + CELL_GAP) / (TARGET_CELL_SIZE + CELL_GAP)));
+  boardCols = max(12, floor((width + CELL_GAP) / (TARGET_CELL_SIZE + CELL_GAP)));
+  boardRows = max(8, floor((height + CELL_GAP) / (TARGET_CELL_SIZE + CELL_GAP)));
 }
 
 function generatePieces() {
@@ -103,14 +103,11 @@ function generatePieces() {
   const removalCount = min(REMOVED_BLOCK_COUNT, generated.length);
 
   for (let i = 0; i < removalCount; i++) {
-    const piece = random(generated);
-    generated.splice(generated.indexOf(piece), 1);
+    generated.splice(floor(random(generated.length)), 1);
   }
 
-  const accentCandidates = generated.filter((piece) => piece.w > 1 || piece.h > 1);
-
-  if (accentCandidates.length > 0) {
-    random(accentCandidates).accent = true;
+  if (generated.length > 0) {
+    random(generated).accent = true;
   }
 
   return generated;
@@ -219,14 +216,13 @@ function drawBoard() {
 }
 
 function drawBoardBackground(board) {
+  noStroke();
+
   if (hasCameraFrame()) {
     drawContinuousCamera(board);
   } else {
-    noStroke();
     fill(83, 55, 24);
     rect(board.x, board.y, board.width, board.height);
-    
-    noStroke();
     fill(18, 12, 8, 28);
     rect(board.x, board.y, board.width, board.height);
   }
@@ -282,18 +278,16 @@ function drawHud() {
 }
 
 function getBoardMetrics() {
-  const usableWidth = width - BOARD_MARGIN * 2;
-  const usableHeight = height - BOARD_MARGIN * 2;
-  const cellWidth = (usableWidth - CELL_GAP * (boardCols - 1)) / boardCols;
-  const cellHeight = (usableHeight - CELL_GAP * (boardRows - 1)) / boardRows;
+  const cellWidth = (width - CELL_GAP * (boardCols - 1)) / boardCols;
+  const cellHeight = (height - CELL_GAP * (boardRows - 1)) / boardRows;
 
   return {
-    x: BOARD_MARGIN,
-    y: BOARD_MARGIN,
+    x: 0,
+    y: 0,
     cellWidth,
     cellHeight,
-    width: usableWidth,
-    height: usableHeight
+    width,
+    height
   };
 }
 
@@ -398,28 +392,16 @@ function buildOccupancy(excludeId) {
 function getMoveOptions(piece) {
   const occupied = buildOccupancy(piece.id);
   const options = [];
+  const isHorizontal = piece.w > piece.h;
 
-  if (piece.w > piece.h) {
+  if (isHorizontal) {
     if (canSlide(piece, -1, 0, occupied)) {
       options.push({ dx: -1, dy: 0 });
     }
     if (canSlide(piece, 1, 0, occupied)) {
       options.push({ dx: 1, dy: 0 });
-    }
-  } else if (piece.h > piece.w) {
-    if (canSlide(piece, 0, -1, occupied)) {
-      options.push({ dx: 0, dy: -1 });
-    }
-    if (canSlide(piece, 0, 1, occupied)) {
-      options.push({ dx: 0, dy: 1 });
     }
   } else {
-    if (canSlide(piece, -1, 0, occupied)) {
-      options.push({ dx: -1, dy: 0 });
-    }
-    if (canSlide(piece, 1, 0, occupied)) {
-      options.push({ dx: 1, dy: 0 });
-    }
     if (canSlide(piece, 0, -1, occupied)) {
       options.push({ dx: 0, dy: -1 });
     }
@@ -466,7 +448,7 @@ function getPieceAtPoint(x, y) {
       y >= rectData.y &&
       y <= rectData.y + rectData.h
     ) {
-      return { piece, rectData };
+      return piece;
     }
   }
 
@@ -537,15 +519,15 @@ function handlePointerPress(x, y) {
     return false;
   }
 
-  const hit = getPieceAtPoint(x, y);
+  const piece = getPieceAtPoint(x, y);
 
-  if (!hit) {
+  if (!piece) {
     dragSelection = null;
     return false;
   }
 
   dragSelection = {
-    piece: hit.piece,
+    piece,
     startX: x,
     startY: y
   };
