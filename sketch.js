@@ -1,5 +1,5 @@
 let cameraFeed;
-let concreteTexture;
+let metalTextures = [];
 let pieces = [];
 let activeMove = null;
 let boardCols = 12;
@@ -8,13 +8,14 @@ let dragSelection = null;
 
 const CELL_GAP = 5;
 const MOVE_DURATION_MS = 220;
-const TARGET_CELL_SIZE = 80;
-const REMOVED_BLOCK_COUNT = 20;
+const TARGET_CELL_SIZE = 160;
+const REMOVED_BLOCK_COUNT = 4;
 const DRAG_THRESHOLD = 18;
 const BLOCK_RADIUS = 5;
 
 function preload() {
-  concreteTexture = loadImage("images/Texturelabs_Concrete_147S.jpg");
+  metalTextures[0] = loadImage("images/metal texture 00.jpg");
+  metalTextures[1] = loadImage("images/metal texture 01.jpg");
 }
 
 function setup() {
@@ -61,41 +62,27 @@ function resetPuzzle() {
 }
 
 function initializeBoardDimensions() {
-  boardCols = max(12, floor((width + CELL_GAP) / (TARGET_CELL_SIZE + CELL_GAP)));
-  boardRows = max(8, floor((height + CELL_GAP) / (TARGET_CELL_SIZE + CELL_GAP)));
+  boardCols = max(6, floor((width + CELL_GAP) / (TARGET_CELL_SIZE + CELL_GAP)));
+  boardRows = max(4, floor((height + CELL_GAP) / (TARGET_CELL_SIZE + CELL_GAP)));
 }
 
 function generatePieces() {
-  const occupied = Array.from({ length: boardRows }, () => Array(boardCols).fill(false));
   const generated = [];
   let nextId = 0;
 
   for (let row = 0; row < boardRows; row++) {
     for (let col = 0; col < boardCols; col++) {
-      if (occupied[row][col]) {
-        continue;
-      }
-
-      const candidates = shuffle(getShapePreferences(row)).filter((shape) =>
-        canPlaceGeneratedPiece(col, row, shape.w, shape.h, occupied)
-      );
-      const shape = candidates[0];
-
-      if (!shape) {
-        continue;
-      }
-
       const piece = {
         id: `piece-${nextId}`,
         x: col,
         y: row,
-        w: shape.w,
-        h: shape.h,
-        accent: false
+        w: 1,
+        h: 1,
+        accent: false,
+        textureIndex: floor(random(metalTextures.length))
       };
 
       generated.push(piece);
-      markGeneratedPiece(occupied, piece, true);
       nextId += 1;
     }
   }
@@ -111,58 +98,6 @@ function generatePieces() {
   }
 
   return generated;
-}
-
-function getShapePreferences(row) {
-  const middleStart = floor(boardRows * 0.3);
-  const middleEnd = ceil(boardRows * 0.75);
-
-  if (row >= middleStart && row <= middleEnd) {
-    return [
-      { w: 2, h: 1 },
-      { w: 2, h: 1 },
-      { w: 2, h: 1 },
-      { w: 2, h: 1 },
-      { w: 2, h: 1 },
-      { w: 1, h: 2 },
-      { w: 1, h: 2 },
-      { w: 1, h: 2 }
-    ];
-  }
-
-  return [
-    { w: 2, h: 1 },
-    { w: 2, h: 1 },
-    { w: 2, h: 1 },
-    { w: 2, h: 1 },
-    { w: 1, h: 2 },
-    { w: 1, h: 2 },
-    { w: 1, h: 2 }
-  ];
-}
-
-function canPlaceGeneratedPiece(x, y, w, h, occupied) {
-  if (x + w > boardCols || y + h > boardRows) {
-    return false;
-  }
-
-  for (let dy = 0; dy < h; dy++) {
-    for (let dx = 0; dx < w; dx++) {
-      if (occupied[y + dy][x + dx]) {
-        return false;
-      }
-    }
-  }
-
-  return true;
-}
-
-function markGeneratedPiece(occupied, piece, value) {
-  for (let dy = 0; dy < piece.h; dy++) {
-    for (let dx = 0; dx < piece.w; dx++) {
-      occupied[piece.y + dy][piece.x + dx] = value;
-    }
-  }
 }
 
 function updateAnimation() {
@@ -182,10 +117,10 @@ function updateAnimation() {
 }
 
 function drawBackground() {
-  background(22, 18, 13);
+  background(12, 14, 18);
 
-  const topColor = color(113, 79, 41);
-  const bottomColor = color(66, 45, 22);
+  const topColor = color(55, 60, 70);
+  const bottomColor = color(20, 22, 28);
 
   for (let y = 0; y < height; y++) {
     const t = y / max(height - 1, 1);
@@ -221,9 +156,9 @@ function drawBoardBackground(board) {
   if (hasCameraFrame()) {
     drawContinuousCamera(board);
   } else {
-    fill(83, 55, 24);
+    fill(30, 33, 40);
     rect(board.x, board.y, board.width, board.height);
-    fill(18, 12, 8, 28);
+    fill(10, 12, 16, 40);
     rect(board.x, board.y, board.width, board.height);
   }
 }
@@ -234,13 +169,13 @@ function drawPiece(piece, board, gridX, gridY) {
 
   drawingContext.save();
   drawingContext.shadowColor = movable
-    ? "rgba(255, 255, 255, 0.18)"
-    : "rgba(0, 0, 0, 0.28)";
-  drawingContext.shadowBlur = movable ? 24 : 16;
-  drawingContext.shadowOffsetY = 7;
+    ? "rgba(180, 200, 220, 0.22)"
+    : "rgba(0, 0, 0, 0.35)";
+  drawingContext.shadowBlur = movable ? 20 : 14;
+  drawingContext.shadowOffsetY = 5;
 
   drawTextureCrop(
-    concreteTexture,
+    metalTextures[piece.textureIndex],
     rectData.x,
     rectData.y,
     rectData.w,
@@ -251,21 +186,24 @@ function drawPiece(piece, board, gridX, gridY) {
 
   drawingContext.restore();
 
+  // Metallic tint overlay
   noStroke();
-  fill(piece.accent ? color(120, 120, 120, 24) : color(255, 255, 255, 12));
+  fill(piece.accent ? color(200, 170, 80, 30) : color(180, 190, 210, 18));
   rect(rectData.x, rectData.y, rectData.w, rectData.h, BLOCK_RADIUS);
 
-  fill(255, 255, 255, 34);
-  rect(rectData.x + 3, rectData.y + 3, rectData.w - 6, rectData.h * 0.16, BLOCK_RADIUS - 1);
+  // Specular highlight strip at top
+  fill(255, 255, 255, 50);
+  rect(rectData.x + 3, rectData.y + 2, rectData.w - 6, rectData.h * 0.18, BLOCK_RADIUS - 1);
 
+  // Metallic border
   noFill();
-  stroke(piece.accent ? color(235, 235, 235, 190) : color(255, 255, 255, 120));
+  stroke(piece.accent ? color(220, 190, 100, 200) : color(200, 210, 230, 130));
   strokeWeight(1.2);
   rect(rectData.x, rectData.y, rectData.w, rectData.h, BLOCK_RADIUS);
 }
 
 function drawHud() {
-  fill(255, 247, 232);
+  fill(210, 220, 235);
   noStroke();
   textAlign(LEFT, TOP);
   textSize(min(width, height) * 0.016);
@@ -278,16 +216,21 @@ function drawHud() {
 }
 
 function getBoardMetrics() {
-  const cellWidth = (width - CELL_GAP * (boardCols - 1)) / boardCols;
-  const cellHeight = (height - CELL_GAP * (boardRows - 1)) / boardRows;
+  // Use equal cell size on both axes so pieces are visually square
+  const cellSize = min(
+    (width - CELL_GAP * (boardCols - 1)) / boardCols,
+    (height - CELL_GAP * (boardRows - 1)) / boardRows
+  );
+  const boardWidth = cellSize * boardCols + CELL_GAP * (boardCols - 1);
+  const boardHeight = cellSize * boardRows + CELL_GAP * (boardRows - 1);
 
   return {
-    x: 0,
-    y: 0,
-    cellWidth,
-    cellHeight,
-    width,
-    height
+    x: (width - boardWidth) / 2,
+    y: (height - boardHeight) / 2,
+    cellWidth: cellSize,
+    cellHeight: cellSize,
+    width: boardWidth,
+    height: boardHeight
   };
 }
 
@@ -392,22 +335,21 @@ function buildOccupancy(excludeId) {
 function getMoveOptions(piece) {
   const occupied = buildOccupancy(piece.id);
   const options = [];
-  const isHorizontal = piece.w > piece.h;
 
-  if (isHorizontal) {
-    if (canSlide(piece, -1, 0, occupied)) {
-      options.push({ dx: -1, dy: 0 });
-    }
-    if (canSlide(piece, 1, 0, occupied)) {
-      options.push({ dx: 1, dy: 0 });
-    }
+  if (piece.w > piece.h) {
+    // Horizontal rectangle: left/right only
+    if (canSlide(piece, -1, 0, occupied)) options.push({ dx: -1, dy: 0 });
+    if (canSlide(piece, 1, 0, occupied)) options.push({ dx: 1, dy: 0 });
+  } else if (piece.h > piece.w) {
+    // Vertical rectangle: up/down only
+    if (canSlide(piece, 0, -1, occupied)) options.push({ dx: 0, dy: -1 });
+    if (canSlide(piece, 0, 1, occupied)) options.push({ dx: 0, dy: 1 });
   } else {
-    if (canSlide(piece, 0, -1, occupied)) {
-      options.push({ dx: 0, dy: -1 });
-    }
-    if (canSlide(piece, 0, 1, occupied)) {
-      options.push({ dx: 0, dy: 1 });
-    }
+    // Square: all four directions
+    if (canSlide(piece, -1, 0, occupied)) options.push({ dx: -1, dy: 0 });
+    if (canSlide(piece, 1, 0, occupied)) options.push({ dx: 1, dy: 0 });
+    if (canSlide(piece, 0, -1, occupied)) options.push({ dx: 0, dy: -1 });
+    if (canSlide(piece, 0, 1, occupied)) options.push({ dx: 0, dy: 1 });
   }
 
   return options;
@@ -464,6 +406,21 @@ function chooseMoveForDrag(piece, dx, dy) {
 
   if (options.length === 1) {
     return options[0];
+  }
+
+  if (piece.w === piece.h) {
+    // Square: pick direction from dominant drag axis
+    if (abs(dx) < DRAG_THRESHOLD && abs(dy) < DRAG_THRESHOLD) {
+      return null;
+    }
+
+    if (abs(dx) >= abs(dy)) {
+      if (dx < 0) return options.find(o => o.dx < 0) || null;
+      return options.find(o => o.dx > 0) || null;
+    } else {
+      if (dy < 0) return options.find(o => o.dy < 0) || null;
+      return options.find(o => o.dy > 0) || null;
+    }
   }
 
   if (piece.w > piece.h) {
