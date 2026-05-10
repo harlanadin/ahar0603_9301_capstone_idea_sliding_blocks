@@ -6,7 +6,7 @@ let boardCols = 12;
 let boardRows = 8;
 let dragSelection = null;
 
-const CELL_GAP = 5;
+const CELL_GAP = 2;
 const MOVE_DURATION_MS = 220;
 const TARGET_CELL_SIZE = 160;
 const REMOVED_BLOCK_COUNT = 4;
@@ -216,21 +216,16 @@ function drawHud() {
 }
 
 function getBoardMetrics() {
-  // Use equal cell size on both axes so pieces are visually square
-  const cellSize = min(
-    (width - CELL_GAP * (boardCols - 1)) / boardCols,
-    (height - CELL_GAP * (boardRows - 1)) / boardRows
-  );
-  const boardWidth = cellSize * boardCols + CELL_GAP * (boardCols - 1);
-  const boardHeight = cellSize * boardRows + CELL_GAP * (boardRows - 1);
+  const cellWidth = (width - CELL_GAP * (boardCols - 1)) / boardCols;
+  const cellHeight = (height - CELL_GAP * (boardRows - 1)) / boardRows;
 
   return {
-    x: (width - boardWidth) / 2,
-    y: (height - boardHeight) / 2,
-    cellWidth: cellSize,
-    cellHeight: cellSize,
-    width: boardWidth,
-    height: boardHeight
+    x: 0,
+    y: 0,
+    cellWidth,
+    cellHeight,
+    width,
+    height
   };
 }
 
