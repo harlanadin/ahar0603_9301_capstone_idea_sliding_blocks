@@ -6,6 +6,15 @@ let boardCols = 12;
 let boardRows = 8;
 let dragSelection = null;
 
+let socket = null;
+let peer = null;
+let myRole = null;
+let remoteVideoEl = null;
+let peerConnected = false;
+let cameraStream = null;
+let peerInitPending = null;
+let pendingSignals = [];
+
 const CELL_GAP = 2;
 const MOVE_DURATION_MS = 220;
 const TARGET_CELL_SIZE = 160;
@@ -23,6 +32,7 @@ function setup() {
   pixelDensity(min(2, displayDensity()));
   setupCamera();
   resetPuzzle();
+  setupNetwork();
 }
 
 function setupCamera() {
@@ -36,8 +46,12 @@ function setupCamera() {
       audio: false
     },
     () => {
-      if (cameraFeed) {
-        cameraFeed.hide();
+      cameraStream = cameraFeed.elt.srcObject;
+      cameraFeed.hide();
+      if (peerInitPending !== null) {
+        const initiator = peerInitPending;
+        peerInitPending = null;
+        initWebRTCPeer(initiator);
       }
     }
   );
@@ -47,6 +61,132 @@ function setupCamera() {
   cameraFeed.hide();
 }
 
+function setupNetwork() {
+  socket = io();
+
+  socket.on('role-assigned', ({ role }) => {
+    myRole = role;
+    console.log('Role assigned:', role);
+  });
+
+  socket.on('peer-joined', () => {
+    const isInitiator = myRole === 'mac';
+    if (cameraStream) {
+      initWebRTCPeer(isInitiator);
+    } else {
+      peerInitPending = isInitiator;
+    }
+    if (myRole === 'mac') {
+      socket.emit('board-sync', { pieces: serializePieces(), boardCols, boardRows });
+    }
+  });
+
+  socket.on('signal', ({ data }) => {
+    if (!peer) {
+      pendingSignals.push(data);
+      if (cameraStream) {
+        initWebRTCPeer(false);
+      } else {
+        peerInitPending = false;
+      }
+    } else {
+      peer.signal(data);
+    }
+  });
+
+  socket.on('remote-block-move', ({ pieceId, dx, dy }) => {
+    applyRemoteMove(pieceId, dx, dy);
+  });
+
+  socket.on('remote-board-sync', ({ pieces: remotePieces, boardCols: rCols, boardRows: rRows }) => {
+    applyRemoteBoardState(remotePieces, rCols, rRows);
+  });
+
+  socket.on('remote-board-reset', ({ pieces: remotePieces, boardCols: rCols, boardRows: rRows }) => {
+    applyRemoteBoardState(remotePieces, rCols, rRows);
+  });
+
+  socket.on('peer-left', () => {
+    peerConnected = false;
+    remoteVideoEl = null;
+    if (peer) { peer.destroy(); peer = null; }
+    console.log('Other device disconnected');
+  });
+
+  socket.emit('join');
+}
+
+function initWebRTCPeer(initiator) {
+  remoteVideoEl = document.createElement('video');
+  remoteVideoEl.setAttribute('autoplay', '');
+  remoteVideoEl.setAttribute('playsinline', '');
+  remoteVideoEl.muted = true;
+  remoteVideoEl.style.display = 'none';
+  document.body.appendChild(remoteVideoEl);
+
+  peer = new SimplePeer({ initiator, trickle: true, stream: cameraStream });
+
+  peer.on('signal', (data) => socket.emit('signal', { data }));
+
+  peer.on('stream', (remoteStream) => {
+    peerConnected = true;
+    remoteVideoEl.srcObject = remoteStream;
+    remoteVideoEl.play().catch(e => console.error('Remote video play error:', e));
+  });
+
+  peer.on('error', (err) => console.error('SimplePeer error:', err));
+
+  pendingSignals.forEach(d => peer.signal(d));
+  pendingSignals = [];
+}
+
+function applyRemoteMove(pieceId, dx, dy) {
+  if (activeMove) return;
+
+  const piece = pieces.find(p => p.id === pieceId);
+  if (!piece) {
+    console.warn('applyRemoteMove: piece not found:', pieceId);
+    return;
+  }
+
+  activeMove = {
+    piece,
+    fromX: piece.x,
+    fromY: piece.y,
+    toX: piece.x + dx,
+    toY: piece.y + dy,
+    startTime: millis()
+  };
+}
+
+function applyRemoteBoardState(remotePieces, remoteBoardCols, remoteBoardRows) {
+  activeMove = null;
+  dragSelection = null;
+  if (remoteBoardCols) boardCols = remoteBoardCols;
+  if (remoteBoardRows) boardRows = remoteBoardRows;
+  pieces = remotePieces.map(p => ({
+    id: p.id,
+    x: p.x,
+    y: p.y,
+    w: p.w,
+    h: p.h,
+    accent: p.accent,
+    textureIndex: p.textureIndex
+  }));
+}
+
+function serializePieces() {
+  return pieces.map(p => ({
+    id: p.id,
+    x: p.x,
+    y: p.y,
+    w: p.w,
+    h: p.h,
+    accent: p.accent,
+    textureIndex: p.textureIndex
+  }));
+}
+
 function draw() {
   updateAnimation();
   drawBackground();
@@ -54,11 +194,14 @@ function draw() {
   drawHud();
 }
 
-function resetPuzzle() {
+function resetPuzzle(broadcast = false) {
   initializeBoardDimensions();
   pieces = generatePieces();
   activeMove = null;
   dragSelection = null;
+  if (broadcast && socket) {
+    socket.emit('board-reset', { pieces: serializePieces(), boardCols, boardRows });
+  }
 }
 
 function initializeBoardDimensions() {
@@ -207,7 +350,11 @@ function drawHud() {
   noStroke();
   textAlign(LEFT, TOP);
   textSize(min(width, height) * 0.016);
-  text("Sliding blocks. Drag to move. Press R to reset.", 12, 10);
+
+  let statusLine = "Sliding blocks. Drag to move. Press R to reset.";
+  if (myRole) statusLine += "  [" + myRole + "]";
+  if (peerConnected) statusLine += "  · peer connected";
+  text(statusLine, 12, 10);
 
   if (!hasCameraFrame()) {
     textAlign(RIGHT, TOP);
@@ -261,14 +408,19 @@ function hasCameraFrame() {
 }
 
 function drawContinuousCamera(board) {
-  const crop = getMediaCoverCrop(cameraFeed, board.width, board.height);
-  const video = cameraFeed.elt;
+  const remoteReady = peerConnected && remoteVideoEl &&
+    remoteVideoEl.videoWidth > 0 && remoteVideoEl.readyState >= 2;
+
+  const mediaSource = remoteReady ? remoteVideoEl : cameraFeed;
+  const videoEl = remoteReady ? remoteVideoEl : cameraFeed.elt;
+
+  const crop = getMediaCoverCrop(mediaSource, board.width, board.height);
 
   drawingContext.save();
   drawingContext.translate(board.x + board.width, board.y);
   drawingContext.scale(-1, 1);
   drawingContext.drawImage(
-    video,
+    videoEl,
     crop.sx,
     crop.sy,
     crop.sw,
@@ -284,10 +436,12 @@ function drawContinuousCamera(board) {
 function getMediaCoverCrop(media, targetWidth, targetHeight) {
   const mediaWidth =
     (media.elt && media.elt.videoWidth) ||
+    media.videoWidth ||
     media.width ||
     1;
   const mediaHeight =
     (media.elt && media.elt.videoHeight) ||
+    media.videoHeight ||
     media.height ||
     1;
   const sourceAspect = mediaWidth / mediaHeight;
@@ -464,6 +618,9 @@ function startMove(piece, move) {
     toY: piece.y + move.dy,
     startTime: millis()
   };
+  if (socket) {
+    socket.emit('block-move', { pieceId: piece.id, dx: move.dx, dy: move.dy });
+  }
 }
 
 function handlePointerPress(x, y) {
@@ -522,7 +679,7 @@ function handlePointerRelease(x, y) {
 
 function keyPressed() {
   if (key === "r" || key === "R") {
-    resetPuzzle();
+    resetPuzzle(true);
   }
 }
 
