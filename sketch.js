@@ -1,541 +1,306 @@
-let cameraFeed;
-let metalTextures = [];
-let pieces = [];
-let activeMove = null;
-let boardCols = 12;
-let boardRows = 8;
-let dragSelection = null;
+'use strict';
 
-const CELL_GAP = 2;
-const MOVE_DURATION_MS = 220;
-const TARGET_CELL_SIZE = 160;
-const REMOVED_BLOCK_COUNT = 4;
-const DRAG_THRESHOLD = 18;
-const BLOCK_RADIUS = 5;
+// ——— CONFIG ———
+const COLS = 4, ROWS = 4, N = COLS * ROWS;
 
-function preload() {
-  metalTextures[0] = loadImage("images/metal texture 00.jpg");
-  metalTextures[1] = loadImage("images/metal texture 01.jpg");
+const LAYER_OVERLAY  = [
+  'rgba(18,14,10,0.64)',  // L1 — front, deepest shadow
+  'rgba(18,14,10,0.50)',  // L2
+  'rgba(18,14,10,0.36)',  // L3
+  'rgba(18,14,10,0.22)',  // L4
+  'rgba(18,14,10,0.08)'   // L5 — back, nearest light
+];
+const LAYER_FALLBACK = ['#363028', '#443c32', '#504540', '#5e534c', '#706860'];
+const EDGE_HIGHLIGHT = 'rgba(255,248,230,0.38)';
+const LERP1 = 0.12;
+
+// ——— STATE ———
+const o1 = new Float32Array(N);
+const o2 = new Float32Array(N);
+const o3 = new Float32Array(N);
+const o4 = new Float32Array(N);
+const o5 = new Float32Array(N);
+const t1 = new Float32Array(N);
+
+let idleMode      = true;
+let idlePhase     = 'waiting'; // 'waiting' | 'opening' | 'holding' | 'closing'
+let idleBlock     = -1;
+let idleTarget    = 0;
+let idleTimestamp = Date.now() + 1200;
+let dragState     = null;
+let openCells     = []; // FIFO queue — max 2 blocks open at once
+
+// ——— CANVAS ———
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+
+function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+window.addEventListener('resize', resize);
+resize();
+
+// ——— TEXTURE ———
+const texStone = new Image();
+let   texLoaded = false;
+texStone.onload = () => { texLoaded = true; };
+texStone.src    = 'images/Texturelabs_Concrete_147S.jpg';
+
+// ——— CAMERA ———
+const video = document.createElement('video');
+video.setAttribute('playsinline', '');
+video.muted = true;
+let cameraReady = false;
+
+if (navigator.mediaDevices?.getUserMedia) {
+  navigator.mediaDevices
+    .getUserMedia({ video: { facingMode: { ideal: 'user' } }, audio: false })
+    .then(stream => {
+      video.srcObject = stream;
+      video.play();
+      video.addEventListener('canplay', () => { cameraReady = true; }, { once: true });
+    })
+    .catch(() => {});
 }
 
-function setup() {
-  createCanvas(windowWidth, windowHeight);
-  pixelDensity(min(2, displayDensity()));
-  setupCamera();
-  resetPuzzle();
-}
+// ——— GEOMETRY ———
+const ci       = (col, row) => row * COLS + col;
+const brickW   = ()         => Math.round(canvas.width / COLS);
+const rowShift = row        => row % 2 === 1 ? Math.round(brickW() / 2) : 0;
+const cellX    = (col, row) => col * brickW() + rowShift(row);
+const cellY    = row        => Math.round(row * canvas.height / ROWS);
+const cellH    = row        => cellY(row + 1) - cellY(row);
 
-function setupCamera() {
-  cameraFeed = createCapture(
-    {
-      video: {
-        facingMode: {
-          ideal: "user"
-        }
-      },
-      audio: false
-    },
-    () => {
-      if (cameraFeed) {
-        cameraFeed.hide();
+// ——— UPDATE ———
+function update() {
+  const mx  = brickW();
+  const tol = mx * 0.025;
+
+  if (idleMode && !dragState) {
+    const now = Date.now();
+    if (idlePhase === 'waiting') {
+      for (let i = 0; i < N; i++) t1[i] = 0;
+      if (now > idleTimestamp) {
+        let next;
+        do { next = Math.floor(Math.random() * N); } while (next === idleBlock && N > 1);
+        idleBlock  = next;
+        idleTarget = mx * (0.70 + Math.random() * 0.20);
+        idlePhase  = 'opening';
+      }
+    } else if (idlePhase === 'opening') {
+      for (let i = 0; i < N; i++) t1[i] = i === idleBlock ? idleTarget : 0;
+      if (Math.abs(o1[idleBlock] - idleTarget) < tol) {
+        idlePhase     = 'holding';
+        idleTimestamp = now + 1200 + Math.random() * 1500;
+      }
+    } else if (idlePhase === 'holding') {
+      for (let i = 0; i < N; i++) t1[i] = i === idleBlock ? idleTarget : 0;
+      if (now > idleTimestamp) idlePhase = 'closing';
+    } else {
+      for (let i = 0; i < N; i++) t1[i] = 0;
+      if (Math.abs(o1[idleBlock]) < tol) {
+        idlePhase     = 'waiting';
+        idleTimestamp = now + 800 + Math.random() * 1200;
       }
     }
-  );
+  }
 
-  cameraFeed.size(640, 480);
-  cameraFeed.attribute("playsinline", "");
-  cameraFeed.hide();
+  for (let i = 0; i < N; i++) {
+    if (dragState?.index === i) continue;
+    o1[i] += (t1[i] - o1[i]) * LERP1;
+  }
+  for (let i = 0; i < N; i++) {
+    o2[i] += (o1[i] * 0.91 - o2[i]) * LERP1;
+    o3[i] += (o1[i] * 0.82 - o3[i]) * LERP1;
+    o4[i] += (o1[i] * 0.73 - o4[i]) * LERP1;
+    o5[i] += (o1[i] * 0.64 - o5[i]) * LERP1;
+  }
+}
+
+// ——— RENDER ———
+function drawBackground() {
+  if (cameraReady && video.videoWidth > 0) {
+    const vw = video.videoWidth, vh = video.videoHeight;
+    const ta = canvas.width / canvas.height, sa = vw / vh;
+    let sx = 0, sy = 0, sw = vw, sh = vh;
+    if (sa > ta) { sw = vh * ta; sx = (vw - sw) * 0.5; }
+    else         { sh = vw / ta; sy = (vh - sh) * 0.5; }
+    ctx.save();
+    ctx.translate(canvas.width, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+    ctx.restore();
+  } else {
+    ctx.fillStyle = '#16140f';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const gd = ctx.createRadialGradient(
+      canvas.width * 0.5, canvas.height * 0.5, 0,
+      canvas.width * 0.5, canvas.height * 0.5,
+      Math.max(canvas.width, canvas.height) * 0.65
+    );
+    gd.addColorStop(0, 'rgba(160,90,18,0.28)');
+    gd.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = gd;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+}
+
+function drawLayerBlock(px, cy, bw, bh, layer, cellIdx, offset) {
+  if (texLoaded) {
+    const iw = texStone.naturalWidth, ih = texStone.naturalHeight;
+    const scale = Math.max(bw / iw, bh / ih);
+    const sw = Math.floor(bw / scale), sh = Math.floor(bh / scale);
+    const maxSx = Math.max(0, iw - sw), maxSy = Math.max(0, ih - sh);
+    ctx.drawImage(texStone,
+      maxSx > 0 ? Math.floor((cellIdx * 83) % (maxSx + 1)) : 0,
+      maxSy > 0 ? Math.floor((cellIdx * 61) % (maxSy + 1)) : 0,
+      sw, sh, px, cy, bw, bh);
+    ctx.fillStyle = LAYER_OVERLAY[layer];
+  } else {
+    ctx.fillStyle = LAYER_FALLBACK[layer];
+  }
+  ctx.fillRect(px, cy, bw, bh);
+
+  // Top-edge highlight — light catching the upper rim of the brick
+  const bev = Math.max(4, Math.round(bh * 0.07));
+  const tg  = ctx.createLinearGradient(0, cy, 0, cy + bev);
+  tg.addColorStop(0, 'rgba(255,245,220,0.22)');
+  tg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = tg;
+  ctx.fillRect(px, cy, bw, bev);
+
+  // Bottom-edge shadow — shadow cast by the brick above
+  const bg = ctx.createLinearGradient(0, cy + bh - bev, 0, cy + bh);
+  bg.addColorStop(0, 'rgba(0,0,0,0)');
+  bg.addColorStop(1, 'rgba(0,0,0,0.32)');
+  ctx.fillStyle = bg;
+  ctx.fillRect(px, cy + bh - bev, bw, bev);
+
+  // Mortar joint — 1 px dark line at top and right edges of front face
+  if (layer === 0) {
+    ctx.fillStyle = 'rgba(6,5,3,0.70)';
+    ctx.fillRect(px, cy, bw, 1);              // top joint
+    ctx.fillRect(px + bw - 1, cy, 1, bh);    // right joint
+  }
+
+  // Bright left/right edge — lit side facing the open gap
+  if (Math.abs(offset) > 1) {
+    ctx.fillStyle = EDGE_HIGHLIGHT;
+    ctx.fillRect(offset > 0 ? px : px + bw - 2, cy, 2, bh);
+  }
+}
+
+function drawBrick(cx, cy, bw, bh, cellIdx, a1, a2, a3, a4, a5) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(cx, cy, bw, bh);
+  ctx.clip();
+  drawLayerBlock(cx + a5, cy, bw, bh, 4, cellIdx, a5);
+  drawLayerBlock(cx + a4, cy, bw, bh, 3, cellIdx, a4);
+  drawLayerBlock(cx + a3, cy, bw, bh, 2, cellIdx, a3);
+  drawLayerBlock(cx + a2, cy, bw, bh, 1, cellIdx, a2);
+  drawLayerBlock(cx + a1, cy, bw, bh, 0, cellIdx, a1);
+  ctx.restore();
 }
 
 function draw() {
-  updateAnimation();
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
   drawBackground();
-  drawBoard();
-  drawHud();
-}
-
-function resetPuzzle() {
-  initializeBoardDimensions();
-  pieces = generatePieces();
-  activeMove = null;
-  dragSelection = null;
-}
-
-function initializeBoardDimensions() {
-  boardCols = max(6, floor((width + CELL_GAP) / (TARGET_CELL_SIZE + CELL_GAP)));
-  boardRows = max(4, floor((height + CELL_GAP) / (TARGET_CELL_SIZE + CELL_GAP)));
-}
-
-function generatePieces() {
-  const generated = [];
-  let nextId = 0;
-
-  for (let row = 0; row < boardRows; row++) {
-    for (let col = 0; col < boardCols; col++) {
-      const piece = {
-        id: `piece-${nextId}`,
-        x: col,
-        y: row,
-        w: 1,
-        h: 1,
-        accent: false,
-        textureIndex: floor(random(metalTextures.length))
-      };
-
-      generated.push(piece);
-      nextId += 1;
+  const bw = brickW();
+  for (let row = 0; row < ROWS; row++) {
+    const bh = cellH(row), cy = cellY(row);
+    // Decorative half-brick at left edge of offset rows (completes stretcher bond)
+    if (row % 2 === 1) {
+      const hw = Math.round(bw / 2), edgeIdx = N + row;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, cy, hw, bh);
+      ctx.clip();
+      drawLayerBlock(-hw, cy, bw, bh, 4, edgeIdx, 0);
+      drawLayerBlock(-hw, cy, bw, bh, 3, edgeIdx, 0);
+      drawLayerBlock(-hw, cy, bw, bh, 2, edgeIdx, 0);
+      drawLayerBlock(-hw, cy, bw, bh, 1, edgeIdx, 0);
+      drawLayerBlock(-hw, cy, bw, bh, 0, edgeIdx, 0);
+      ctx.restore();
+    }
+    for (let col = 0; col < COLS; col++) {
+      const i = ci(col, row);
+      drawBrick(cellX(col, row), cy, bw, bh, i, o1[i], o2[i], o3[i], o4[i], o5[i]);
     }
   }
-
-  const removalCount = min(REMOVED_BLOCK_COUNT, generated.length);
-
-  for (let i = 0; i < removalCount; i++) {
-    generated.splice(floor(random(generated.length)), 1);
-  }
-
-  if (generated.length > 0) {
-    random(generated).accent = true;
-  }
-
-  return generated;
 }
 
-function updateAnimation() {
-  if (!activeMove) {
-    return;
+// ——— INPUT ———
+function getXY(e) {
+  if (e.touches?.length) {
+    const r = canvas.getBoundingClientRect();
+    return { x: e.touches[0].clientX - r.left, y: e.touches[0].clientY - r.top };
   }
-
-  const elapsed = millis() - activeMove.startTime;
-
-  if (elapsed < MOVE_DURATION_MS) {
-    return;
-  }
-
-  activeMove.piece.x = activeMove.toX;
-  activeMove.piece.y = activeMove.toY;
-  activeMove = null;
+  return { x: e.offsetX, y: e.offsetY };
 }
 
-function drawBackground() {
-  background(12, 14, 18);
-
-  const topColor = color(55, 60, 70);
-  const bottomColor = color(20, 22, 28);
-
-  for (let y = 0; y < height; y++) {
-    const t = y / max(height - 1, 1);
-    stroke(lerpColor(topColor, bottomColor, t));
-    line(0, y, width, y);
-  }
+function hitCell(px, py) {
+  const row = Math.floor(py * ROWS / canvas.height);
+  if (row < 0 || row >= ROWS) return -1;
+  const col = Math.floor((px - rowShift(row)) / brickW());
+  return col >= 0 && col < COLS ? ci(col, row) : -1;
 }
 
-function drawBoard() {
-  const board = getBoardMetrics();
-
-  drawBoardBackground(board);
-
-  for (const piece of pieces) {
-    if (activeMove && piece.id === activeMove.piece.id) {
-      continue;
-    }
-
-    drawPiece(piece, board, piece.x, piece.y);
+function pressAt(px, py) {
+  const idx = hitCell(px, py);
+  if (idx < 0) return;
+  if (idleMode) {
+    idleMode  = false;
+    idlePhase = 'waiting';
+    if (idleBlock >= 0) t1[idleBlock] = 0; // close whatever idle had open
+    document.getElementById('btn-idle').textContent = 'Idle: OFF';
   }
-
-  if (activeMove) {
-    const t = easeInOutCubic(constrain((millis() - activeMove.startTime) / MOVE_DURATION_MS, 0, 1));
-    const x = lerp(activeMove.fromX, activeMove.toX, t);
-    const y = lerp(activeMove.fromY, activeMove.toY, t);
-    drawPiece(activeMove.piece, board, x, y);
+  // If already one of the open blocks, just drag it — no queue change
+  if (!openCells.includes(idx)) {
+    if (openCells.length >= 2) t1[openCells.shift()] = 0; // evict oldest
+    t1[idx] = o1[idx]; // freeze at current position (no snap)
+    openCells.push(idx);
   }
+  dragState = { index: idx, startX: px, startOffset: o1[idx] };
 }
 
-function drawBoardBackground(board) {
-  noStroke();
+function moveAt(px) {
+  if (!dragState) return;
+  const mx = brickW();
+  const v  = Math.max(-mx, Math.min(mx, dragState.startOffset + px - dragState.startX));
+  o1[dragState.index] = t1[dragState.index] = v;
+}
 
-  if (hasCameraFrame()) {
-    drawContinuousCamera(board);
+canvas.addEventListener('mousedown',  e => { const { x, y } = getXY(e); pressAt(x, y); });
+canvas.addEventListener('mousemove',  e => { if (dragState) moveAt(getXY(e).x); });
+canvas.addEventListener('mouseup',    () => { dragState = null; });
+canvas.addEventListener('mouseleave', () => { dragState = null; });
+canvas.addEventListener('touchstart', e => { e.preventDefault(); const { x, y } = getXY(e); pressAt(x, y); }, { passive: false });
+canvas.addEventListener('touchmove',  e => { e.preventDefault(); moveAt(getXY(e).x); }, { passive: false });
+canvas.addEventListener('touchend',   e => { e.preventDefault(); dragState = null; }, { passive: false });
+
+// ——— CONTROLS ———
+document.getElementById('btn-idle').addEventListener('click', () => {
+  idleMode = !idleMode;
+  document.getElementById('btn-idle').textContent = idleMode ? 'Idle: ON' : 'Idle: OFF';
+  if (idleMode) {
+    for (const j of openCells) t1[j] = 0; // close manual blocks before idle takes over
+    openCells.length = 0;
+    idlePhase = 'waiting';
+    idleTimestamp = Date.now() + 800;
   } else {
-    fill(30, 33, 40);
-    rect(board.x, board.y, board.width, board.height);
-    fill(10, 12, 16, 40);
-    rect(board.x, board.y, board.width, board.height);
+    for (let j = 0; j < N; j++) t1[j] = o1[j];
   }
-}
-
-function drawPiece(piece, board, gridX, gridY) {
-  const rectData = getRectForCells(board, gridX, gridY, piece.w, piece.h);
-  const movable = !activeMove && getMoveOptions(piece).length > 0;
-
-  drawingContext.save();
-  drawingContext.shadowColor = movable
-    ? "rgba(180, 200, 220, 0.22)"
-    : "rgba(0, 0, 0, 0.35)";
-  drawingContext.shadowBlur = movable ? 20 : 14;
-  drawingContext.shadowOffsetY = 5;
-
-  drawTextureCrop(
-    metalTextures[piece.textureIndex],
-    rectData.x,
-    rectData.y,
-    rectData.w,
-    rectData.h,
-    piece.x,
-    piece.y
-  );
-
-  drawingContext.restore();
-
-  // Metallic tint overlay
-  noStroke();
-  fill(piece.accent ? color(200, 170, 80, 30) : color(180, 190, 210, 18));
-  rect(rectData.x, rectData.y, rectData.w, rectData.h, BLOCK_RADIUS);
-
-  // Specular highlight strip at top
-  fill(255, 255, 255, 50);
-  rect(rectData.x + 3, rectData.y + 2, rectData.w - 6, rectData.h * 0.18, BLOCK_RADIUS - 1);
-
-  // Metallic border
-  noFill();
-  stroke(piece.accent ? color(220, 190, 100, 200) : color(200, 210, 230, 130));
-  strokeWeight(1.2);
-  rect(rectData.x, rectData.y, rectData.w, rectData.h, BLOCK_RADIUS);
-}
-
-function drawHud() {
-  fill(210, 220, 235);
-  noStroke();
-  textAlign(LEFT, TOP);
-  textSize(min(width, height) * 0.016);
-  text("Sliding blocks. Drag to move. Press R to reset.", 12, 10);
-
-  if (!hasCameraFrame()) {
-    textAlign(RIGHT, TOP);
-    text("Allow front camera access to reveal the empty spaces.", width - 12, 10);
-  }
-}
-
-function getBoardMetrics() {
-  const cellWidth = (width - CELL_GAP * (boardCols - 1)) / boardCols;
-  const cellHeight = (height - CELL_GAP * (boardRows - 1)) / boardRows;
-
-  return {
-    x: 0,
-    y: 0,
-    cellWidth,
-    cellHeight,
-    width,
-    height
-  };
-}
-
-function getRectForCells(board, gridX, gridY, w, h) {
-  return {
-    x: board.x + gridX * (board.cellWidth + CELL_GAP),
-    y: board.y + gridY * (board.cellHeight + CELL_GAP),
-    w: board.cellWidth * w + CELL_GAP * (w - 1),
-    h: board.cellHeight * h + CELL_GAP * (h - 1)
-  };
-}
-
-function drawTextureCrop(source, dx, dy, dw, dh, seedX, seedY) {
-  const scale = max(dw / source.width, dh / source.height);
-  const sw = dw / scale;
-  const sh = dh / scale;
-  const maxSx = max(0, source.width - sw);
-  const maxSy = max(0, source.height - sh);
-  const sx = maxSx === 0 ? 0 : ((seedX * 97 + seedY * 53) % floor(maxSx + 1));
-  const sy = maxSy === 0 ? 0 : ((seedY * 89 + seedX * 41) % floor(maxSy + 1));
-
-  image(source, dx, dy, dw, dh, sx, sy, sw, sh);
-}
-
-function hasCameraFrame() {
-  return (
-    cameraFeed &&
-    cameraFeed.elt &&
-    cameraFeed.elt.readyState >= 2 &&
-    cameraFeed.elt.videoWidth > 0 &&
-    cameraFeed.elt.videoHeight > 0
-  );
-}
-
-function drawContinuousCamera(board) {
-  const crop = getMediaCoverCrop(cameraFeed, board.width, board.height);
-  const video = cameraFeed.elt;
-
-  drawingContext.save();
-  drawingContext.translate(board.x + board.width, board.y);
-  drawingContext.scale(-1, 1);
-  drawingContext.drawImage(
-    video,
-    crop.sx,
-    crop.sy,
-    crop.sw,
-    crop.sh,
-    0,
-    0,
-    board.width,
-    board.height
-  );
-  drawingContext.restore();
-}
-
-function getMediaCoverCrop(media, targetWidth, targetHeight) {
-  const mediaWidth =
-    (media.elt && media.elt.videoWidth) ||
-    media.width ||
-    1;
-  const mediaHeight =
-    (media.elt && media.elt.videoHeight) ||
-    media.height ||
-    1;
-  const sourceAspect = mediaWidth / mediaHeight;
-  const targetAspect = targetWidth / targetHeight;
-
-  let sx = 0;
-  let sy = 0;
-  let sw = mediaWidth;
-  let sh = mediaHeight;
-
-  if (sourceAspect > targetAspect) {
-    sw = mediaHeight * targetAspect;
-    sx = (mediaWidth - sw) * 0.5;
-  } else {
-    sh = mediaWidth / targetAspect;
-    sy = (mediaHeight - sh) * 0.5;
-  }
-
-  return { sx, sy, sw, sh };
-}
-
-function buildOccupancy(excludeId) {
-  const grid = Array.from({ length: boardRows }, () => Array(boardCols).fill(null));
-
-  for (const piece of pieces) {
-    if (piece.id === excludeId) {
-      continue;
-    }
-
-    for (let dy = 0; dy < piece.h; dy++) {
-      for (let dx = 0; dx < piece.w; dx++) {
-        grid[piece.y + dy][piece.x + dx] = piece.id;
-      }
-    }
-  }
-
-  return grid;
-}
-
-function getMoveOptions(piece) {
-  const occupied = buildOccupancy(piece.id);
-  const options = [];
-
-  if (piece.w > piece.h) {
-    // Horizontal rectangle: left/right only
-    if (canSlide(piece, -1, 0, occupied)) options.push({ dx: -1, dy: 0 });
-    if (canSlide(piece, 1, 0, occupied)) options.push({ dx: 1, dy: 0 });
-  } else if (piece.h > piece.w) {
-    // Vertical rectangle: up/down only
-    if (canSlide(piece, 0, -1, occupied)) options.push({ dx: 0, dy: -1 });
-    if (canSlide(piece, 0, 1, occupied)) options.push({ dx: 0, dy: 1 });
-  } else {
-    // Square: all four directions
-    if (canSlide(piece, -1, 0, occupied)) options.push({ dx: -1, dy: 0 });
-    if (canSlide(piece, 1, 0, occupied)) options.push({ dx: 1, dy: 0 });
-    if (canSlide(piece, 0, -1, occupied)) options.push({ dx: 0, dy: -1 });
-    if (canSlide(piece, 0, 1, occupied)) options.push({ dx: 0, dy: 1 });
-  }
-
-  return options;
-}
-
-function canSlide(piece, dx, dy, occupied) {
-  const nextX = piece.x + dx;
-  const nextY = piece.y + dy;
-
-  if (nextX < 0 || nextY < 0 || nextX + piece.w > boardCols || nextY + piece.h > boardRows) {
-    return false;
-  }
-
-  for (let y = 0; y < piece.h; y++) {
-    for (let x = 0; x < piece.w; x++) {
-      const cellX = nextX + x;
-      const cellY = nextY + y;
-
-      if (occupied[cellY][cellX]) {
-        return false;
-      }
-    }
-  }
-
-  return true;
-}
-
-function getPieceAtPoint(x, y) {
-  const board = getBoardMetrics();
-
-  for (let i = pieces.length - 1; i >= 0; i--) {
-    const piece = pieces[i];
-    const rectData = getRectForCells(board, piece.x, piece.y, piece.w, piece.h);
-
-    if (
-      x >= rectData.x &&
-      x <= rectData.x + rectData.w &&
-      y >= rectData.y &&
-      y <= rectData.y + rectData.h
-    ) {
-      return piece;
-    }
-  }
-
-  return null;
-}
-
-function chooseMoveForDrag(piece, dx, dy) {
-  const options = getMoveOptions(piece);
-
-  if (options.length === 0) {
-    return null;
-  }
-
-  if (options.length === 1) {
-    return options[0];
-  }
-
-  if (piece.w === piece.h) {
-    // Square: pick direction from dominant drag axis
-    if (abs(dx) < DRAG_THRESHOLD && abs(dy) < DRAG_THRESHOLD) {
-      return null;
-    }
-
-    if (abs(dx) >= abs(dy)) {
-      if (dx < 0) return options.find(o => o.dx < 0) || null;
-      return options.find(o => o.dx > 0) || null;
-    } else {
-      if (dy < 0) return options.find(o => o.dy < 0) || null;
-      return options.find(o => o.dy > 0) || null;
-    }
-  }
-
-  if (piece.w > piece.h) {
-    const leftOption = options.find((option) => option.dx < 0);
-    const rightOption = options.find((option) => option.dx > 0);
-
-    if (abs(dx) < DRAG_THRESHOLD || abs(dx) < abs(dy)) {
-      return null;
-    }
-
-    if (dx < 0 && leftOption) {
-      return leftOption;
-    }
-
-    if (dx > 0 && rightOption) {
-      return rightOption;
-    }
-
-    return leftOption || options[0];
-  }
-
-  const upOption = options.find((option) => option.dy < 0);
-  const downOption = options.find((option) => option.dy > 0);
-
-  if (abs(dy) < DRAG_THRESHOLD || abs(dy) < abs(dx)) {
-    return null;
-  }
-
-  if (dy < 0 && upOption) {
-    return upOption;
-  }
-
-  if (dy > 0 && downOption) {
-    return downOption;
-  }
-
-  return upOption || options[0];
-}
-
-function startMove(piece, move) {
-  activeMove = {
-    piece,
-    fromX: piece.x,
-    fromY: piece.y,
-    toX: piece.x + move.dx,
-    toY: piece.y + move.dy,
-    startTime: millis()
-  };
-}
-
-function handlePointerPress(x, y) {
-  if (activeMove) {
-    return false;
-  }
-
-  const piece = getPieceAtPoint(x, y);
-
-  if (!piece) {
-    dragSelection = null;
-    return false;
-  }
-
-  dragSelection = {
-    piece,
-    startX: x,
-    startY: y
-  };
-  return true;
-}
-
-function mousePressed() {
-  return handlePointerPress(mouseX, mouseY);
-}
-
-function mouseReleased() {
-  return handlePointerRelease(mouseX, mouseY);
-}
-
-function touchStarted() {
-  return handlePointerPress(mouseX, mouseY);
-}
-
-function touchEnded() {
-  return handlePointerRelease(mouseX, mouseY);
-}
-
-function handlePointerRelease(x, y) {
-  if (!dragSelection || activeMove) {
-    dragSelection = null;
-    return false;
-  }
-
-  const dx = x - dragSelection.startX;
-  const dy = y - dragSelection.startY;
-  const move = chooseMoveForDrag(dragSelection.piece, dx, dy);
-
-  if (move) {
-    startMove(dragSelection.piece, move);
-  }
-
-  dragSelection = null;
-  return !!move;
-}
-
-function keyPressed() {
-  if (key === "r" || key === "R") {
-    resetPuzzle();
-  }
-}
-
-function windowResized() {
-  resizeCanvas(windowWidth, windowHeight);
-  activeMove = null;
-  dragSelection = null;
-}
-
-function easeInOutCubic(t) {
-  if (t < 0.5) {
-    return 4 * t * t * t;
-  }
-
-  return 1 - pow(-2 * t + 2, 3) / 2;
-}
+});
+
+document.getElementById('btn-reset').addEventListener('click', () => {
+  o1.fill(0); o2.fill(0); o3.fill(0); o4.fill(0); o5.fill(0); t1.fill(0);
+  dragState        = null;
+  openCells.length = 0;
+  idleMode         = true;
+  idlePhase     = 'waiting';
+  idleBlock     = -1;
+  idleTimestamp = Date.now() + 1200;
+  document.getElementById('btn-idle').textContent = 'Idle: ON';
+});
+
+// ——— LOOP ———
+(function loop() { update(); draw(); requestAnimationFrame(loop); })();
