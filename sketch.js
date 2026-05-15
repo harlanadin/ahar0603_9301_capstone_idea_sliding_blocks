@@ -209,12 +209,22 @@ function update() {
     o1[i] += (t1[i] - o1[i]) * LERP1;
   }
   for (let i = 0; i < N; i++) {
-    o2[i] += (o1[i] * 0.9775 - o2[i]) * LERP1;
-    o3[i] += (o1[i] * 0.9550 - o3[i]) * LERP1;
-    o4[i] += (o1[i] * 0.9325 - o4[i]) * LERP1;
-    o5[i] += (o1[i] * 0.9100 - o5[i]) * LERP1;
-    o6[i] += (o1[i] * 0.8875 - o6[i]) * LERP1;
-    o7[i] += (o1[i] * 0.8650 - o7[i]) * LERP1;
+    if (dragState?.index === i) {
+      // Snap all layers in sync while dragging — no perceptible gap
+      o2[i] = o1[i] * 0.9775;
+      o3[i] = o1[i] * 0.9550;
+      o4[i] = o1[i] * 0.9325;
+      o5[i] = o1[i] * 0.9100;
+      o6[i] = o1[i] * 0.8875;
+      o7[i] = o1[i] * 0.8650;
+    } else {
+      o2[i] += (o1[i] * 0.9775 - o2[i]) * LERP1;
+      o3[i] += (o1[i] * 0.9550 - o3[i]) * LERP1;
+      o4[i] += (o1[i] * 0.9325 - o4[i]) * LERP1;
+      o5[i] += (o1[i] * 0.9100 - o5[i]) * LERP1;
+      o6[i] += (o1[i] * 0.8875 - o6[i]) * LERP1;
+      o7[i] += (o1[i] * 0.8650 - o7[i]) * LERP1;
+    }
   }
 
   // Auto-close manually opened bricks after 10 s
