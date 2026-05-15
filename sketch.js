@@ -61,6 +61,77 @@ if (navigator.mediaDevices?.getUserMedia) {
     .catch(() => {});
 }
 
+// ——— AUDIO ———
+const AC = new AudioContext();
+
+// Brown-noise buffer — used for scraping and idle creak
+const noiseBuffer = (() => {
+  const buf  = AC.createBuffer(1, AC.sampleRate * 3, AC.sampleRate);
+  const data = buf.getChannelData(0);
+  let b = 0;
+  for (let i = 0; i < data.length; i++) {
+    b = (b + (Math.random() * 2 - 1) * 0.02) / 1.02;
+    data[i] = b * 4;
+  }
+  return buf;
+})();
+
+let scrapeSource = null, scrapeGain = null, lastDragX = 0;
+
+function ensureAudio() { if (AC.state === 'suspended') AC.resume(); }
+
+function startScrape(x) {
+  ensureAudio();
+  lastDragX = x;
+  if (scrapeSource) return;
+  scrapeSource = AC.createBufferSource();
+  scrapeSource.buffer = noiseBuffer;
+  scrapeSource.loop   = true;
+  const filter = AC.createBiquadFilter();
+  filter.type = 'bandpass'; filter.frequency.value = 600; filter.Q.value = 1.2;
+  scrapeGain = AC.createGain();
+  scrapeGain.gain.value = 0;
+  scrapeSource.connect(filter); filter.connect(scrapeGain); scrapeGain.connect(AC.destination);
+  scrapeSource.start();
+}
+
+function updateScrape(x) {
+  const vel = Math.abs(x - lastDragX); lastDragX = x;
+  if (scrapeGain)
+    scrapeGain.gain.setTargetAtTime(Math.min(0.28, vel * 0.013), AC.currentTime, 0.04);
+}
+
+function stopScrape() {
+  if (scrapeGain) scrapeGain.gain.setTargetAtTime(0, AC.currentTime, 0.08);
+  if (scrapeSource) {
+    const s = scrapeSource; scrapeSource = null; scrapeGain = null;
+    setTimeout(() => { try { s.stop(); } catch (_) {} }, 250);
+  }
+  // Low thud on release
+  const osc = AC.createOscillator(), g = AC.createGain();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(110, AC.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(35, AC.currentTime + 0.18);
+  g.gain.setValueAtTime(0.45, AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + 0.35);
+  osc.connect(g); g.connect(AC.destination);
+  osc.start(); osc.stop(AC.currentTime + 0.35);
+}
+
+function playIdleCreak() {
+  ensureAudio();
+  const src = AC.createBufferSource();
+  src.buffer = noiseBuffer;
+  const filter = AC.createBiquadFilter();
+  filter.type = 'bandpass'; filter.frequency.value = 280; filter.Q.value = 2.5;
+  const g = AC.createGain();
+  g.gain.setValueAtTime(0, AC.currentTime);
+  g.gain.linearRampToValueAtTime(0.07, AC.currentTime + 0.4);
+  g.gain.linearRampToValueAtTime(0, AC.currentTime + 1.8);
+  src.connect(filter); filter.connect(g); g.connect(AC.destination);
+  src.start(); src.stop(AC.currentTime + 1.8);
+}
+
 // ——— GEOMETRY ———
 const ci       = (col, row) => row * COLS + col;
 const brickW   = ()         => Math.round(canvas.width / COLS);
@@ -84,6 +155,7 @@ function update() {
         idleBlock  = next;
         idleTarget = mx * (0.70 + Math.random() * 0.20);
         idlePhase  = 'opening';
+        playIdleCreak();
       }
     } else if (idlePhase === 'opening') {
       for (let i = 0; i < N; i++) t1[i] = i === idleBlock ? idleTarget : 0;
@@ -108,10 +180,10 @@ function update() {
     o1[i] += (t1[i] - o1[i]) * LERP1;
   }
   for (let i = 0; i < N; i++) {
-    o2[i] += (o1[i] * 0.91 - o2[i]) * LERP1;
-    o3[i] += (o1[i] * 0.82 - o3[i]) * LERP1;
-    o4[i] += (o1[i] * 0.73 - o4[i]) * LERP1;
-    o5[i] += (o1[i] * 0.64 - o5[i]) * LERP1;
+    o2[i] += (o1[i] * 0.955 - o2[i]) * LERP1;
+    o3[i] += (o1[i] * 0.910 - o3[i]) * LERP1;
+    o4[i] += (o1[i] * 0.865 - o4[i]) * LERP1;
+    o5[i] += (o1[i] * 0.820 - o5[i]) * LERP1;
   }
 }
 
@@ -259,6 +331,7 @@ function pressAt(px, py) {
     t1[idx] = o1[idx]; // freeze at current position (no snap)
     openCells.push(idx);
   }
+  startScrape(px);
   dragState = { index: idx, startX: px, startOffset: o1[idx] };
 }
 
@@ -267,15 +340,18 @@ function moveAt(px) {
   const mx = brickW();
   const v  = Math.max(-mx, Math.min(mx, dragState.startOffset + px - dragState.startX));
   o1[dragState.index] = t1[dragState.index] = v;
+  updateScrape(px);
 }
+
+function endDrag() { stopScrape(); dragState = null; }
 
 canvas.addEventListener('mousedown',  e => { const { x, y } = getXY(e); pressAt(x, y); });
 canvas.addEventListener('mousemove',  e => { if (dragState) moveAt(getXY(e).x); });
-canvas.addEventListener('mouseup',    () => { dragState = null; });
-canvas.addEventListener('mouseleave', () => { dragState = null; });
+canvas.addEventListener('mouseup',    () => endDrag());
+canvas.addEventListener('mouseleave', () => endDrag());
 canvas.addEventListener('touchstart', e => { e.preventDefault(); const { x, y } = getXY(e); pressAt(x, y); }, { passive: false });
 canvas.addEventListener('touchmove',  e => { e.preventDefault(); moveAt(getXY(e).x); }, { passive: false });
-canvas.addEventListener('touchend',   e => { e.preventDefault(); dragState = null; }, { passive: false });
+canvas.addEventListener('touchend',   e => { e.preventDefault(); endDrag(); }, { passive: false });
 
 // ——— CONTROLS ———
 document.getElementById('btn-idle').addEventListener('click', () => {
