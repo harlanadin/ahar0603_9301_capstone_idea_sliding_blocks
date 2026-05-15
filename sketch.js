@@ -3,42 +3,38 @@
 // ——— CONFIG ———
 const COLS = 8, ROWS = 8, N = COLS * ROWS;
 
+// Fixed 3-brick vertical strip at centre — idle teaser
+const IDLE_BRICKS = (() => {
+  const col = Math.floor(COLS / 2) - 1;
+  const r0  = Math.floor((ROWS - 3) / 2);
+  return [0, 1, 2].map(r => (r0 + r) * COLS + col);
+})();
+
 const LAYER_OVERLAY  = [
-  'rgba(18,14,10,0.64)',  // L1 — front, deepest shadow
-  'rgba(18,14,10,0.54)',  // L2
-  'rgba(18,14,10,0.44)',  // L3
-  'rgba(18,14,10,0.34)',  // L4
-  'rgba(18,14,10,0.24)',  // L5
-  'rgba(18,14,10,0.14)',  // L6
-  'rgba(18,14,10,0.04)'   // L7 — back, nearest light
+  'rgba(18,14,10,0.64)', 'rgba(18,14,10,0.54)', 'rgba(18,14,10,0.44)',
+  'rgba(18,14,10,0.34)', 'rgba(18,14,10,0.24)', 'rgba(18,14,10,0.14)',
+  'rgba(18,14,10,0.04)'
 ];
-const LAYER_FALLBACK = ['#363028', '#3e3830', '#464038', '#504540', '#5a4f4a', '#645a54', '#706860'];
+const LAYER_FALLBACK = ['#363028','#3e3830','#464038','#504540','#5a4f4a','#645a54','#706860'];
 const EDGE_HIGHLIGHT = 'rgba(255,248,230,0.38)';
 const LERP1 = 0.12;
 
 // ——— STATE ———
-const o1 = new Float32Array(N);
-const o2 = new Float32Array(N);
-const o3 = new Float32Array(N);
-const o4 = new Float32Array(N);
-const o5 = new Float32Array(N);
-const o6 = new Float32Array(N);
-const o7 = new Float32Array(N);
-const t1 = new Float32Array(N);
+const o1 = new Float32Array(N), o2 = new Float32Array(N), o3 = new Float32Array(N);
+const o4 = new Float32Array(N), o5 = new Float32Array(N), o6 = new Float32Array(N);
+const o7 = new Float32Array(N), t1 = new Float32Array(N);
 
 let idleMode      = true;
-let idlePhase     = 'waiting'; // 'waiting' | 'opening' | 'holding' | 'closing'
-let idleBlocks    = []; // current cluster of auto-opening bricks
+let idlePhase     = 'waiting';
 let idleTarget    = 0;
 let idleTimestamp = Date.now() + 1200;
 let dragState     = null;
-let openCells     = []; // [{ index, openedAt }] — max 12 open, auto-close after 10 s
-let allClosedSince = Date.now(); // tracks when openCells last became empty
+let openCells     = []; // [{ index, openedAt }] — max 15, auto-close 12 s
+let allClosedSince = Date.now();
 
 // ——— CANVAS ———
 const canvas = document.getElementById('c');
 const ctx    = canvas.getContext('2d');
-
 function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
 window.addEventListener('resize', resize);
 resize();
@@ -49,61 +45,52 @@ let   texLoaded = false;
 texStone.onload = () => { texLoaded = true; };
 texStone.src    = 'images/Texturelabs_Concrete_147S.jpg';
 
+// ——— SLIDE ICON ———
+const iconSlide = new Image();
+let   iconLoaded = false;
+iconSlide.onload = () => { iconLoaded = true; };
+iconSlide.src    = 'images/slide-left-right-icon.png';
+
 // ——— CAMERA ———
 const video = document.createElement('video');
-video.setAttribute('playsinline', '');
-video.muted = true;
+video.setAttribute('playsinline', ''); video.muted = true;
 let cameraReady = false;
-
 if (navigator.mediaDevices?.getUserMedia) {
   navigator.mediaDevices
     .getUserMedia({ video: { facingMode: { ideal: 'user' } }, audio: false })
     .then(stream => {
-      video.srcObject = stream;
-      video.play();
+      video.srcObject = stream; video.play();
       video.addEventListener('canplay', () => { cameraReady = true; }, { once: true });
-    })
-    .catch(() => {});
+    }).catch(() => {});
 }
 
 // ——— AUDIO ———
 const AC = new AudioContext();
-
-// Brown-noise buffer — used for scraping and idle creak
 const noiseBuffer = (() => {
-  const buf  = AC.createBuffer(1, AC.sampleRate * 3, AC.sampleRate);
-  const data = buf.getChannelData(0);
+  const buf = AC.createBuffer(1, AC.sampleRate * 3, AC.sampleRate);
+  const d   = buf.getChannelData(0);
   let b = 0;
-  for (let i = 0; i < data.length; i++) {
-    b = (b + (Math.random() * 2 - 1) * 0.02) / 1.02;
-    data[i] = b * 4;
-  }
+  for (let i = 0; i < d.length; i++) { b = (b + (Math.random() * 2 - 1) * 0.02) / 1.02; d[i] = b * 4; }
   return buf;
 })();
 
 let scrapeSource = null, scrapeGain = null, lastDragX = 0;
-
 function ensureAudio() { if (AC.state === 'suspended') AC.resume(); }
 
 function startScrape(x) {
-  ensureAudio();
-  lastDragX = x;
+  ensureAudio(); lastDragX = x;
   if (scrapeSource) return;
   scrapeSource = AC.createBufferSource();
-  scrapeSource.buffer = noiseBuffer;
-  scrapeSource.loop   = true;
-  const filter = AC.createBiquadFilter();
-  filter.type = 'bandpass'; filter.frequency.value = 600; filter.Q.value = 1.2;
-  scrapeGain = AC.createGain();
-  scrapeGain.gain.value = 0;
-  scrapeSource.connect(filter); filter.connect(scrapeGain); scrapeGain.connect(AC.destination);
+  scrapeSource.buffer = noiseBuffer; scrapeSource.loop = true;
+  const f = AC.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 600; f.Q.value = 1.2;
+  scrapeGain = AC.createGain(); scrapeGain.gain.value = 0;
+  scrapeSource.connect(f); f.connect(scrapeGain); scrapeGain.connect(AC.destination);
   scrapeSource.start();
 }
 
 function updateScrape(x) {
   const vel = Math.abs(x - lastDragX); lastDragX = x;
-  if (scrapeGain)
-    scrapeGain.gain.setTargetAtTime(Math.min(0.28, vel * 0.013), AC.currentTime, 0.04);
+  if (scrapeGain) scrapeGain.gain.setTargetAtTime(Math.min(0.28, vel * 0.013), AC.currentTime, 0.04);
 }
 
 function stopScrape() {
@@ -112,7 +99,6 @@ function stopScrape() {
     const s = scrapeSource; scrapeSource = null; scrapeGain = null;
     setTimeout(() => { try { s.stop(); } catch (_) {} }, 250);
   }
-  // Low thud on release
   const osc = AC.createOscillator(), g = AC.createGain();
   osc.type = 'sine';
   osc.frequency.setValueAtTime(110, AC.currentTime);
@@ -125,15 +111,13 @@ function stopScrape() {
 
 function playIdleCreak() {
   ensureAudio();
-  const src = AC.createBufferSource();
-  src.buffer = noiseBuffer;
-  const filter = AC.createBiquadFilter();
-  filter.type = 'bandpass'; filter.frequency.value = 280; filter.Q.value = 2.5;
-  const g = AC.createGain();
+  const src = AC.createBufferSource(); src.buffer = noiseBuffer;
+  const f   = AC.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 280; f.Q.value = 2.5;
+  const g   = AC.createGain();
   g.gain.setValueAtTime(0, AC.currentTime);
   g.gain.linearRampToValueAtTime(0.07, AC.currentTime + 0.4);
-  g.gain.linearRampToValueAtTime(0, AC.currentTime + 1.8);
-  src.connect(filter); filter.connect(g); g.connect(AC.destination);
+  g.gain.linearRampToValueAtTime(0,    AC.currentTime + 1.8);
+  src.connect(f); f.connect(g); g.connect(AC.destination);
   src.start(); src.stop(AC.currentTime + 1.8);
 }
 
@@ -145,105 +129,60 @@ const cellX    = (col, row) => col * brickW() + rowShift(row);
 const cellY    = row        => Math.round(row * canvas.height / ROWS);
 const cellH    = row        => cellY(row + 1) - cellY(row);
 
-// ——— GEOMETRY HELPERS ———
-function gridNeighbours(i) {
-  const col = i % COLS, row = Math.floor(i / COLS);
-  const nb = [];
-  if (col > 0)        nb.push(i - 1);
-  if (col < COLS - 1) nb.push(i + 1);
-  if (row > 0)        nb.push(i - COLS);
-  if (row < ROWS - 1) nb.push(i + COLS);
-  return nb;
-}
-
-function pickCluster(size) {
-  const seed    = Math.floor(Math.random() * N);
-  const cluster = new Set([seed]);
-  const frontier = gridNeighbours(seed).filter(n => !cluster.has(n));
-  while (cluster.size < size && frontier.length > 0) {
-    const pick = Math.floor(Math.random() * frontier.length);
-    const next = frontier.splice(pick, 1)[0];
-    cluster.add(next);
-    for (const nb of gridNeighbours(next)) {
-      if (!cluster.has(nb) && !frontier.includes(nb)) frontier.push(nb);
-    }
-  }
-  return [...cluster];
-}
-
 // ——— UPDATE ———
 function update() {
   const mx  = brickW();
   const tol = mx * 0.025;
+  const now = Date.now();
 
   if (idleMode && !dragState) {
-    const now = Date.now();
     if (idlePhase === 'waiting') {
       for (let i = 0; i < N; i++) t1[i] = 0;
       if (now > idleTimestamp) {
-        idleBlocks = pickCluster(5);
         idleTarget = mx * (0.70 + Math.random() * 0.20);
         idlePhase  = 'opening';
         playIdleCreak();
       }
     } else if (idlePhase === 'opening') {
-      for (let i = 0; i < N; i++) t1[i] = idleBlocks.includes(i) ? idleTarget : 0;
-      if (Math.abs(o1[idleBlocks[0]] - idleTarget) < tol) {
+      for (let i = 0; i < N; i++) t1[i] = IDLE_BRICKS.includes(i) ? idleTarget : 0;
+      if (Math.abs(o1[IDLE_BRICKS[0]] - idleTarget) < tol) {
         idlePhase     = 'holding';
         idleTimestamp = now + 1200 + Math.random() * 1500;
       }
     } else if (idlePhase === 'holding') {
-      for (let i = 0; i < N; i++) t1[i] = idleBlocks.includes(i) ? idleTarget : 0;
+      for (let i = 0; i < N; i++) t1[i] = IDLE_BRICKS.includes(i) ? idleTarget : 0;
       if (now > idleTimestamp) idlePhase = 'closing';
     } else {
       for (let i = 0; i < N; i++) t1[i] = 0;
-      if (idleBlocks.every(b => Math.abs(o1[b]) < tol)) {
+      if (IDLE_BRICKS.every(b => Math.abs(o1[b]) < tol)) {
         idlePhase     = 'waiting';
         idleTimestamp = now + 800 + Math.random() * 1200;
       }
     }
   }
 
+  // Lerp + cascade in a single pass
   for (let i = 0; i < N; i++) {
-    if (dragState?.index === i) continue;
-    o1[i] += (t1[i] - o1[i]) * LERP1;
-  }
-  for (let i = 0; i < N; i++) {
+    if (dragState?.index !== i) o1[i] += (t1[i] - o1[i]) * LERP1;
     if (dragState?.index === i) {
-      // Snap all layers in sync while dragging — no perceptible gap
-      o2[i] = o1[i] * 0.9775;
-      o3[i] = o1[i] * 0.9550;
-      o4[i] = o1[i] * 0.9325;
-      o5[i] = o1[i] * 0.9100;
-      o6[i] = o1[i] * 0.8875;
-      o7[i] = o1[i] * 0.8650;
+      o2[i] = o1[i] * 0.9775; o3[i] = o1[i] * 0.9550; o4[i] = o1[i] * 0.9325;
+      o5[i] = o1[i] * 0.9100; o6[i] = o1[i] * 0.8875; o7[i] = o1[i] * 0.8650;
     } else {
-      o2[i] += (o1[i] * 0.9775 - o2[i]) * LERP1;
-      o3[i] += (o1[i] * 0.9550 - o3[i]) * LERP1;
-      o4[i] += (o1[i] * 0.9325 - o4[i]) * LERP1;
-      o5[i] += (o1[i] * 0.9100 - o5[i]) * LERP1;
-      o6[i] += (o1[i] * 0.8875 - o6[i]) * LERP1;
-      o7[i] += (o1[i] * 0.8650 - o7[i]) * LERP1;
+      o2[i] += (o1[i] * 0.9775 - o2[i]) * LERP1; o3[i] += (o1[i] * 0.9550 - o3[i]) * LERP1;
+      o4[i] += (o1[i] * 0.9325 - o4[i]) * LERP1; o5[i] += (o1[i] * 0.9100 - o5[i]) * LERP1;
+      o6[i] += (o1[i] * 0.8875 - o6[i]) * LERP1; o7[i] += (o1[i] * 0.8650 - o7[i]) * LERP1;
     }
   }
 
-  // Auto-close manually opened bricks after 10 s
-  const nowMs = Date.now();
+  // Auto-close bricks after 12 s
   for (let k = openCells.length - 1; k >= 0; k--) {
-    if (nowMs - openCells[k].openedAt > 10000) {
-      t1[openCells[k].index] = 0;
-      openCells.splice(k, 1);
-    }
+    if (now - openCells[k].openedAt > 12000) { t1[openCells[k].index] = 0; openCells.splice(k, 1); }
   }
+  if (openCells.length > 0) allClosedSince = now;
 
-  // Track when all bricks are closed
-  if (openCells.length > 0) allClosedSince = nowMs;
-
-  // Auto-activate idle 5 s after all bricks have closed with no interaction
-  if (!idleMode && !dragState && openCells.length === 0 && nowMs - allClosedSince > 5000) {
-    idleMode      = true;
-    idlePhase     = 'waiting';
-    idleTimestamp = nowMs + 500;
+  // Auto-activate idle 5 s after all bricks closed
+  if (!idleMode && !dragState && openCells.length === 0 && now - allClosedSince > 5000) {
+    idleMode = true; idlePhase = 'waiting'; idleTimestamp = now + 500;
   }
 }
 
@@ -256,8 +195,7 @@ function drawBackground() {
     if (sa > ta) { sw = vh * ta; sx = (vw - sw) * 0.5; }
     else         { sh = vw / ta; sy = (vh - sh) * 0.5; }
     ctx.save();
-    ctx.translate(canvas.width, 0);
-    ctx.scale(-1, 1);
+    ctx.translate(canvas.width, 0); ctx.scale(-1, 1);
     ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
     ctx.restore();
   } else {
@@ -265,13 +203,10 @@ function drawBackground() {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     const gd = ctx.createRadialGradient(
       canvas.width * 0.5, canvas.height * 0.5, 0,
-      canvas.width * 0.5, canvas.height * 0.5,
-      Math.max(canvas.width, canvas.height) * 0.65
+      canvas.width * 0.5, canvas.height * 0.5, Math.max(canvas.width, canvas.height) * 0.65
     );
-    gd.addColorStop(0, 'rgba(160,90,18,0.28)');
-    gd.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = gd;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    gd.addColorStop(0, 'rgba(160,90,18,0.28)'); gd.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = gd; ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
 }
 
@@ -291,47 +226,31 @@ function drawLayerBlock(px, cy, bw, bh, layer, cellIdx, offset) {
   }
   ctx.fillRect(px, cy, bw, bh);
 
-  // Top-edge highlight — light catching the upper rim of the brick
   const bev = Math.max(4, Math.round(bh * 0.07));
   const tg  = ctx.createLinearGradient(0, cy, 0, cy + bev);
-  tg.addColorStop(0, 'rgba(255,245,220,0.22)');
-  tg.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = tg;
-  ctx.fillRect(px, cy, bw, bev);
+  tg.addColorStop(0, 'rgba(255,245,220,0.22)'); tg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = tg; ctx.fillRect(px, cy, bw, bev);
 
-  // Bottom-edge shadow — shadow cast by the brick above
   const bg = ctx.createLinearGradient(0, cy + bh - bev, 0, cy + bh);
-  bg.addColorStop(0, 'rgba(0,0,0,0)');
-  bg.addColorStop(1, 'rgba(0,0,0,0.32)');
-  ctx.fillStyle = bg;
-  ctx.fillRect(px, cy + bh - bev, bw, bev);
+  bg.addColorStop(0, 'rgba(0,0,0,0)'); bg.addColorStop(1, 'rgba(0,0,0,0.32)');
+  ctx.fillStyle = bg; ctx.fillRect(px, cy + bh - bev, bw, bev);
 
-  // Mortar joint — 1 px dark line at top and right edges of front face
   if (layer === 0) {
     ctx.fillStyle = 'rgba(6,5,3,0.70)';
-    ctx.fillRect(px, cy, bw, 1);              // top joint
-    ctx.fillRect(px + bw - 1, cy, 1, bh);    // right joint
+    ctx.fillRect(px, cy, bw, 1); ctx.fillRect(px + bw - 1, cy, 1, bh);
   }
-
-  // Bright left/right edge — lit side facing the open gap
   if (Math.abs(offset) > 1) {
     ctx.fillStyle = EDGE_HIGHLIGHT;
     ctx.fillRect(offset > 0 ? px : px + bw - 2, cy, 2, bh);
   }
 }
 
-function drawBrick(cx, cy, bw, bh, cellIdx, a1, a2, a3, a4, a5, a6, a7) {
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(cx, cy, bw, bh);
-  ctx.clip();
-  drawLayerBlock(cx + a7, cy, bw, bh, 6, cellIdx, a7);
-  drawLayerBlock(cx + a6, cy, bw, bh, 5, cellIdx, a6);
-  drawLayerBlock(cx + a5, cy, bw, bh, 4, cellIdx, a5);
-  drawLayerBlock(cx + a4, cy, bw, bh, 3, cellIdx, a4);
-  drawLayerBlock(cx + a3, cy, bw, bh, 2, cellIdx, a3);
-  drawLayerBlock(cx + a2, cy, bw, bh, 1, cellIdx, a2);
-  drawLayerBlock(cx + a1, cy, bw, bh, 0, cellIdx, a1);
+function drawBrick(cx, cy, bw, bh, idx, a1, a2, a3, a4, a5, a6, a7) {
+  ctx.save(); ctx.beginPath(); ctx.rect(cx, cy, bw, bh); ctx.clip();
+  drawLayerBlock(cx+a7,cy,bw,bh,6,idx,a7); drawLayerBlock(cx+a6,cy,bw,bh,5,idx,a6);
+  drawLayerBlock(cx+a5,cy,bw,bh,4,idx,a5); drawLayerBlock(cx+a4,cy,bw,bh,3,idx,a4);
+  drawLayerBlock(cx+a3,cy,bw,bh,2,idx,a3); drawLayerBlock(cx+a2,cy,bw,bh,1,idx,a2);
+  drawLayerBlock(cx+a1,cy,bw,bh,0,idx,a1);
   ctx.restore();
 }
 
@@ -339,41 +258,66 @@ function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   drawBackground();
   const bw = brickW();
+
+  // Pass 1 — all bricks clipped to their cells
   for (let row = 0; row < ROWS; row++) {
     const bh = cellH(row), cy = cellY(row);
-    // Decorative half-brick at left edge of offset rows (completes stretcher bond)
     if (row % 2 === 1) {
-      const hw = Math.round(bw / 2), edgeIdx = N + row;
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(0, cy, hw, bh);
-      ctx.clip();
-      drawLayerBlock(-hw, cy, bw, bh, 6, edgeIdx, 0);
-      drawLayerBlock(-hw, cy, bw, bh, 5, edgeIdx, 0);
-      drawLayerBlock(-hw, cy, bw, bh, 4, edgeIdx, 0);
-      drawLayerBlock(-hw, cy, bw, bh, 3, edgeIdx, 0);
-      drawLayerBlock(-hw, cy, bw, bh, 2, edgeIdx, 0);
-      drawLayerBlock(-hw, cy, bw, bh, 1, edgeIdx, 0);
-      drawLayerBlock(-hw, cy, bw, bh, 0, edgeIdx, 0);
+      const hw = Math.round(bw / 2), ei = N + row;
+      ctx.save(); ctx.beginPath(); ctx.rect(0, cy, hw, bh); ctx.clip();
+      for (let l = 6; l >= 0; l--) drawLayerBlock(-hw, cy, bw, bh, l, ei, 0);
       ctx.restore();
     }
     for (let col = 0; col < COLS; col++) {
       const i = ci(col, row);
-      drawBrick(cellX(col, row), cy, bw, bh, i, o1[i], o2[i], o3[i], o4[i], o5[i], o6[i], o7[i]);
+      drawBrick(cellX(col,row), cy, bw, bh, i, o1[i],o2[i],o3[i],o4[i],o5[i],o6[i],o7[i]);
     }
   }
 
-  // Pass 2 — front face of every moving brick rendered on top without a right/left clip,
-  // so it overlaps the neighbouring brick instead of getting cut off at the cell edge.
+  // Pass 2 — sliding front faces rendered on top, overlap neighbours
   for (let row = 0; row < ROWS; row++) {
     const bh = cellH(row), cy = cellY(row);
     for (let col = 0; col < COLS; col++) {
       const i = ci(col, row);
-      if (Math.abs(o1[i]) > 1) {
-        drawLayerBlock(cellX(col, row) + o1[i], cy, bw, bh, 0, i, o1[i]);
-      }
+      if (Math.abs(o1[i]) > 1) drawLayerBlock(cellX(col,row)+o1[i], cy, bw, bh, 0, i, o1[i]);
     }
   }
+
+  drawIdleIcon();
+}
+
+function drawIdleIcon() {
+  if (!iconLoaded || !idleMode || idleTarget <= 0) return;
+  // Alpha follows the brick opening — fades in as bricks open, out as they close
+  const alpha = Math.min(1, o1[IDLE_BRICKS[0]] / idleTarget);
+  if (alpha < 0.02) return;
+
+  const t    = Date.now() / 1000;
+  const bw   = brickW();
+  const mid  = IDLE_BRICKS[1];                      // middle idle brick
+  const mRow = Math.floor(mid / COLS);
+  const mCol = mid % COLS;
+  const bh   = cellH(mRow);
+
+  // Sit below the bottom idle brick, horizontally centred on the column
+  const botRow  = Math.floor(IDLE_BRICKS[2] / COLS);
+  const bottomY = cellY(botRow) + cellH(botRow);
+  const iconH   = bh * 0.85;
+  const iconW   = iconH * (iconSlide.naturalWidth / Math.max(1, iconSlide.naturalHeight));
+  const iconX   = cellX(mCol, mRow) + bw / 2 - iconW / 2;
+  const iconY   = bottomY + 14 + Math.sin(t * 1.8) * 5;
+
+  const pulse = 0.80 + 0.20 * Math.sin(t * 2.2);
+
+  ctx.save();
+  ctx.globalAlpha = alpha * pulse;
+  ctx.shadowColor = 'rgba(255,225,150,1.0)';
+  ctx.shadowBlur  = 35 + 15 * Math.sin(t * 1.5);
+  ctx.drawImage(iconSlide, iconX, iconY, iconW, iconH);
+  // Second pass for stronger glow
+  ctx.shadowBlur  = 20;
+  ctx.drawImage(iconSlide, iconX, iconY, iconW, iconH);
+  ctx.restore();
 }
 
 // ——— INPUT ———
@@ -388,24 +332,28 @@ function getXY(e) {
 function hitCell(px, py) {
   const row = Math.floor(py * ROWS / canvas.height);
   if (row < 0 || row >= ROWS) return -1;
-  const col = Math.floor((px - rowShift(row)) / brickW());
+  const bw = brickW();
+  for (let col = 0; col < COLS; col++) {
+    const i = ci(col, row);
+    if (Math.abs(o1[i]) > 1) {
+      const fx = cellX(col, row) + o1[i];
+      if (px >= fx && px < fx + bw) return i;
+    }
+  }
+  const col = Math.floor((px - rowShift(row)) / bw);
   return col >= 0 && col < COLS ? ci(col, row) : -1;
 }
 
 function pressAt(px, py) {
   const idx = hitCell(px, py);
   if (idx < 0) return;
-  if (idleMode) {
-    idleMode  = false;
-    idlePhase = 'waiting';
-    for (const b of idleBlocks) t1[b] = 0;
-  }
+  if (idleMode) { idleMode = false; idlePhase = 'waiting'; for (const b of IDLE_BRICKS) t1[b] = 0; }
   const existing = openCells.find(c => c.index === idx);
   if (existing) {
-    existing.openedAt = Date.now(); // reset the 3 s timer on re-touch
+    existing.openedAt = Date.now();
   } else {
-    if (openCells.length >= 12) t1[openCells.shift().index] = 0; // evict oldest
-    t1[idx] = o1[idx]; // freeze at current position (no snap)
+    if (openCells.length >= 15) t1[openCells.shift().index] = 0;
+    t1[idx] = o1[idx];
     openCells.push({ index: idx, openedAt: Date.now() });
   }
   startScrape(px);
@@ -422,13 +370,12 @@ function moveAt(px) {
 
 function endDrag() { stopScrape(); dragState = null; }
 
-canvas.addEventListener('mousedown',  e => { const { x, y } = getXY(e); pressAt(x, y); });
+canvas.addEventListener('mousedown',  e => { const {x,y} = getXY(e); pressAt(x,y); });
 canvas.addEventListener('mousemove',  e => { if (dragState) moveAt(getXY(e).x); });
 canvas.addEventListener('mouseup',    () => endDrag());
 canvas.addEventListener('mouseleave', () => endDrag());
-canvas.addEventListener('touchstart', e => { e.preventDefault(); const { x, y } = getXY(e); pressAt(x, y); }, { passive: false });
+canvas.addEventListener('touchstart', e => { e.preventDefault(); const {x,y} = getXY(e); pressAt(x,y); }, { passive: false });
 canvas.addEventListener('touchmove',  e => { e.preventDefault(); moveAt(getXY(e).x); }, { passive: false });
 canvas.addEventListener('touchend',   e => { e.preventDefault(); endDrag(); }, { passive: false });
 
-// ——— LOOP ———
 (function loop() { update(); draw(); requestAnimationFrame(loop); })();
