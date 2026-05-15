@@ -1,16 +1,18 @@
 'use strict';
 
 // ——— CONFIG ———
-const COLS = 4, ROWS = 4, N = COLS * ROWS;
+const COLS = 8, ROWS = 8, N = COLS * ROWS;
 
 const LAYER_OVERLAY  = [
   'rgba(18,14,10,0.64)',  // L1 — front, deepest shadow
-  'rgba(18,14,10,0.50)',  // L2
-  'rgba(18,14,10,0.36)',  // L3
-  'rgba(18,14,10,0.22)',  // L4
-  'rgba(18,14,10,0.08)'   // L5 — back, nearest light
+  'rgba(18,14,10,0.54)',  // L2
+  'rgba(18,14,10,0.44)',  // L3
+  'rgba(18,14,10,0.34)',  // L4
+  'rgba(18,14,10,0.24)',  // L5
+  'rgba(18,14,10,0.14)',  // L6
+  'rgba(18,14,10,0.04)'   // L7 — back, nearest light
 ];
-const LAYER_FALLBACK = ['#363028', '#443c32', '#504540', '#5e534c', '#706860'];
+const LAYER_FALLBACK = ['#363028', '#3e3830', '#464038', '#504540', '#5a4f4a', '#645a54', '#706860'];
 const EDGE_HIGHLIGHT = 'rgba(255,248,230,0.38)';
 const LERP1 = 0.12;
 
@@ -20,15 +22,18 @@ const o2 = new Float32Array(N);
 const o3 = new Float32Array(N);
 const o4 = new Float32Array(N);
 const o5 = new Float32Array(N);
+const o6 = new Float32Array(N);
+const o7 = new Float32Array(N);
 const t1 = new Float32Array(N);
 
 let idleMode      = true;
 let idlePhase     = 'waiting'; // 'waiting' | 'opening' | 'holding' | 'closing'
-let idleBlock     = -1;
+let idleBlocks    = []; // current cluster of auto-opening bricks
 let idleTarget    = 0;
 let idleTimestamp = Date.now() + 1200;
 let dragState     = null;
-let openCells     = []; // FIFO queue — max 2 blocks open at once
+let openCells     = []; // [{ index, openedAt }] — max 12 open, auto-close after 10 s
+let allClosedSince = Date.now(); // tracks when openCells last became empty
 
 // ——— CANVAS ———
 const canvas = document.getElementById('c');
@@ -140,6 +145,32 @@ const cellX    = (col, row) => col * brickW() + rowShift(row);
 const cellY    = row        => Math.round(row * canvas.height / ROWS);
 const cellH    = row        => cellY(row + 1) - cellY(row);
 
+// ——— GEOMETRY HELPERS ———
+function gridNeighbours(i) {
+  const col = i % COLS, row = Math.floor(i / COLS);
+  const nb = [];
+  if (col > 0)        nb.push(i - 1);
+  if (col < COLS - 1) nb.push(i + 1);
+  if (row > 0)        nb.push(i - COLS);
+  if (row < ROWS - 1) nb.push(i + COLS);
+  return nb;
+}
+
+function pickCluster(size) {
+  const seed    = Math.floor(Math.random() * N);
+  const cluster = new Set([seed]);
+  const frontier = gridNeighbours(seed).filter(n => !cluster.has(n));
+  while (cluster.size < size && frontier.length > 0) {
+    const pick = Math.floor(Math.random() * frontier.length);
+    const next = frontier.splice(pick, 1)[0];
+    cluster.add(next);
+    for (const nb of gridNeighbours(next)) {
+      if (!cluster.has(nb) && !frontier.includes(nb)) frontier.push(nb);
+    }
+  }
+  return [...cluster];
+}
+
 // ——— UPDATE ———
 function update() {
   const mx  = brickW();
@@ -150,25 +181,23 @@ function update() {
     if (idlePhase === 'waiting') {
       for (let i = 0; i < N; i++) t1[i] = 0;
       if (now > idleTimestamp) {
-        let next;
-        do { next = Math.floor(Math.random() * N); } while (next === idleBlock && N > 1);
-        idleBlock  = next;
+        idleBlocks = pickCluster(5);
         idleTarget = mx * (0.70 + Math.random() * 0.20);
         idlePhase  = 'opening';
         playIdleCreak();
       }
     } else if (idlePhase === 'opening') {
-      for (let i = 0; i < N; i++) t1[i] = i === idleBlock ? idleTarget : 0;
-      if (Math.abs(o1[idleBlock] - idleTarget) < tol) {
+      for (let i = 0; i < N; i++) t1[i] = idleBlocks.includes(i) ? idleTarget : 0;
+      if (Math.abs(o1[idleBlocks[0]] - idleTarget) < tol) {
         idlePhase     = 'holding';
         idleTimestamp = now + 1200 + Math.random() * 1500;
       }
     } else if (idlePhase === 'holding') {
-      for (let i = 0; i < N; i++) t1[i] = i === idleBlock ? idleTarget : 0;
+      for (let i = 0; i < N; i++) t1[i] = idleBlocks.includes(i) ? idleTarget : 0;
       if (now > idleTimestamp) idlePhase = 'closing';
     } else {
       for (let i = 0; i < N; i++) t1[i] = 0;
-      if (Math.abs(o1[idleBlock]) < tol) {
+      if (idleBlocks.every(b => Math.abs(o1[b]) < tol)) {
         idlePhase     = 'waiting';
         idleTimestamp = now + 800 + Math.random() * 1200;
       }
@@ -180,10 +209,31 @@ function update() {
     o1[i] += (t1[i] - o1[i]) * LERP1;
   }
   for (let i = 0; i < N; i++) {
-    o2[i] += (o1[i] * 0.955 - o2[i]) * LERP1;
-    o3[i] += (o1[i] * 0.910 - o3[i]) * LERP1;
-    o4[i] += (o1[i] * 0.865 - o4[i]) * LERP1;
-    o5[i] += (o1[i] * 0.820 - o5[i]) * LERP1;
+    o2[i] += (o1[i] * 0.9775 - o2[i]) * LERP1;
+    o3[i] += (o1[i] * 0.9550 - o3[i]) * LERP1;
+    o4[i] += (o1[i] * 0.9325 - o4[i]) * LERP1;
+    o5[i] += (o1[i] * 0.9100 - o5[i]) * LERP1;
+    o6[i] += (o1[i] * 0.8875 - o6[i]) * LERP1;
+    o7[i] += (o1[i] * 0.8650 - o7[i]) * LERP1;
+  }
+
+  // Auto-close manually opened bricks after 10 s
+  const nowMs = Date.now();
+  for (let k = openCells.length - 1; k >= 0; k--) {
+    if (nowMs - openCells[k].openedAt > 10000) {
+      t1[openCells[k].index] = 0;
+      openCells.splice(k, 1);
+    }
+  }
+
+  // Track when all bricks are closed
+  if (openCells.length > 0) allClosedSince = nowMs;
+
+  // Auto-activate idle 5 s after all bricks have closed with no interaction
+  if (!idleMode && !dragState && openCells.length === 0 && nowMs - allClosedSince > 5000) {
+    idleMode      = true;
+    idlePhase     = 'waiting';
+    idleTimestamp = nowMs + 500;
   }
 }
 
@@ -260,11 +310,13 @@ function drawLayerBlock(px, cy, bw, bh, layer, cellIdx, offset) {
   }
 }
 
-function drawBrick(cx, cy, bw, bh, cellIdx, a1, a2, a3, a4, a5) {
+function drawBrick(cx, cy, bw, bh, cellIdx, a1, a2, a3, a4, a5, a6, a7) {
   ctx.save();
   ctx.beginPath();
   ctx.rect(cx, cy, bw, bh);
   ctx.clip();
+  drawLayerBlock(cx + a7, cy, bw, bh, 6, cellIdx, a7);
+  drawLayerBlock(cx + a6, cy, bw, bh, 5, cellIdx, a6);
   drawLayerBlock(cx + a5, cy, bw, bh, 4, cellIdx, a5);
   drawLayerBlock(cx + a4, cy, bw, bh, 3, cellIdx, a4);
   drawLayerBlock(cx + a3, cy, bw, bh, 2, cellIdx, a3);
@@ -286,6 +338,8 @@ function draw() {
       ctx.beginPath();
       ctx.rect(0, cy, hw, bh);
       ctx.clip();
+      drawLayerBlock(-hw, cy, bw, bh, 6, edgeIdx, 0);
+      drawLayerBlock(-hw, cy, bw, bh, 5, edgeIdx, 0);
       drawLayerBlock(-hw, cy, bw, bh, 4, edgeIdx, 0);
       drawLayerBlock(-hw, cy, bw, bh, 3, edgeIdx, 0);
       drawLayerBlock(-hw, cy, bw, bh, 2, edgeIdx, 0);
@@ -295,7 +349,19 @@ function draw() {
     }
     for (let col = 0; col < COLS; col++) {
       const i = ci(col, row);
-      drawBrick(cellX(col, row), cy, bw, bh, i, o1[i], o2[i], o3[i], o4[i], o5[i]);
+      drawBrick(cellX(col, row), cy, bw, bh, i, o1[i], o2[i], o3[i], o4[i], o5[i], o6[i], o7[i]);
+    }
+  }
+
+  // Pass 2 — front face of every moving brick rendered on top without a right/left clip,
+  // so it overlaps the neighbouring brick instead of getting cut off at the cell edge.
+  for (let row = 0; row < ROWS; row++) {
+    const bh = cellH(row), cy = cellY(row);
+    for (let col = 0; col < COLS; col++) {
+      const i = ci(col, row);
+      if (Math.abs(o1[i]) > 1) {
+        drawLayerBlock(cellX(col, row) + o1[i], cy, bw, bh, 0, i, o1[i]);
+      }
     }
   }
 }
@@ -322,14 +388,15 @@ function pressAt(px, py) {
   if (idleMode) {
     idleMode  = false;
     idlePhase = 'waiting';
-    if (idleBlock >= 0) t1[idleBlock] = 0; // close whatever idle had open
-    document.getElementById('btn-idle').textContent = 'Idle: OFF';
+    for (const b of idleBlocks) t1[b] = 0;
   }
-  // If already one of the open blocks, just drag it — no queue change
-  if (!openCells.includes(idx)) {
-    if (openCells.length >= 2) t1[openCells.shift()] = 0; // evict oldest
+  const existing = openCells.find(c => c.index === idx);
+  if (existing) {
+    existing.openedAt = Date.now(); // reset the 3 s timer on re-touch
+  } else {
+    if (openCells.length >= 12) t1[openCells.shift().index] = 0; // evict oldest
     t1[idx] = o1[idx]; // freeze at current position (no snap)
-    openCells.push(idx);
+    openCells.push({ index: idx, openedAt: Date.now() });
   }
   startScrape(px);
   dragState = { index: idx, startX: px, startOffset: o1[idx] };
@@ -352,31 +419,6 @@ canvas.addEventListener('mouseleave', () => endDrag());
 canvas.addEventListener('touchstart', e => { e.preventDefault(); const { x, y } = getXY(e); pressAt(x, y); }, { passive: false });
 canvas.addEventListener('touchmove',  e => { e.preventDefault(); moveAt(getXY(e).x); }, { passive: false });
 canvas.addEventListener('touchend',   e => { e.preventDefault(); endDrag(); }, { passive: false });
-
-// ——— CONTROLS ———
-document.getElementById('btn-idle').addEventListener('click', () => {
-  idleMode = !idleMode;
-  document.getElementById('btn-idle').textContent = idleMode ? 'Idle: ON' : 'Idle: OFF';
-  if (idleMode) {
-    for (const j of openCells) t1[j] = 0; // close manual blocks before idle takes over
-    openCells.length = 0;
-    idlePhase = 'waiting';
-    idleTimestamp = Date.now() + 800;
-  } else {
-    for (let j = 0; j < N; j++) t1[j] = o1[j];
-  }
-});
-
-document.getElementById('btn-reset').addEventListener('click', () => {
-  o1.fill(0); o2.fill(0); o3.fill(0); o4.fill(0); o5.fill(0); t1.fill(0);
-  dragState        = null;
-  openCells.length = 0;
-  idleMode         = true;
-  idlePhase     = 'waiting';
-  idleBlock     = -1;
-  idleTimestamp = Date.now() + 1200;
-  document.getElementById('btn-idle').textContent = 'Idle: ON';
-});
 
 // ——— LOOP ———
 (function loop() { update(); draw(); requestAnimationFrame(loop); })();
