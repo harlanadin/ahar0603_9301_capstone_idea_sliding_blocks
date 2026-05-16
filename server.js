@@ -31,7 +31,8 @@ io.on('connection', (socket) => {
     if (other) io.to(other).emit('signal', { data });
   });
 
-  ['block-move', 'board-sync', 'board-reset'].forEach((evt) => {
+  ['block-move', 'board-sync', 'board-reset',
+   'brick-open', 'brick-drag', 'brick-release', 'brick-close'].forEach((evt) => {
     socket.on(evt, (payload) => {
       const other = room[otherRole(socket.data.role)];
       if (other) io.to(other).emit('remote-' + evt, payload);

@@ -46,8 +46,15 @@ Built with [p5.js](https://p5js.org/).
 ---
 
 ## Running Locally
+We recommend you to install `ngrok` so the other device can connect to your app server through a public link.
+Open two separate terminal sessions to run the app and ngrok server.
 
-Open `index.html` in a browser. Camera access is requested on load — allow it to activate the mirror effect. No build step required.
+```bash
+npm start
+```
+```bash
+ngrok http 3000
+```
 
 ---
 
